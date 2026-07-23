@@ -68,6 +68,14 @@
 #include "fdosecrets/FdoSecretsPlugin.h"
 #endif
 
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+#ifdef Q_OS_WIN
+#include "ospasskeys/windows/OsPasskeyBootstrap.h"
+#elif defined(Q_OS_LINUX)
+#include "ospasskeys/linux/OsPasskeyBootstrap.h"
+#endif
+#endif
+
 #ifdef KPXC_FEATURE_BROWSER
 #include "browser/BrowserService.h"
 #endif
@@ -231,6 +239,27 @@ MainWindow::MainWindow()
     connect(fdoSS, &FdoSecretsPlugin::requestShowNotification, this, &MainWindow::displayDesktopNotification);
     fdoSS->updateServiceState();
     m_ui->settingsWidget->addSettingsPage(fdoSS);
+#endif
+
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+    OsPasskeyBootstrap::start(m_ui->tabWidget);
+    // One-time tip: OS Passkeys stay off until the user opts in under Settings.
+    connect(m_ui->tabWidget, &DatabaseTabWidget::databaseUnlocked, this, [](DatabaseWidget*) {
+        if (config()->get(Config::OsPasskeys_Enabled).toBool()
+            || config()->get(Config::OsPasskeys_SetupHintShown).toBool()) {
+            return;
+        }
+        config()->set(Config::OsPasskeys_SetupHintShown, true);
+        if (auto* mw = getMainWindow()) {
+            mw->displayGlobalMessage(
+                QObject::tr("OS Passkeys are available but off by default. Enable them under "
+                            "Tools → Settings → OS Passkeys to use system passkeys without the browser "
+                            "extension."),
+                MessageWidget::Information,
+                true,
+                20000);
+        }
+    });
 #endif
 
     connect(YubiKey::instance(), SIGNAL(userInteractionRequest()), SLOT(showYubiKeyPopup()), Qt::QueuedConnection);
@@ -661,6 +690,9 @@ MainWindow::MainWindow()
 
 MainWindow::~MainWindow()
 {
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+    OsPasskeyBootstrap::stop();
+#endif
 #ifdef KPXC_FEATURE_SSHAGENT
     sshAgent()->removeAllIdentities();
 #endif

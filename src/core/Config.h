@@ -170,6 +170,9 @@ public:
         Browser_CustomExtensionId,
 #endif
 
+        OsPasskeys_Enabled,
+        OsPasskeys_SetupHintShown,
+
         SSHAgent_Enabled,
         SSHAgent_UseOpenSSH,
         SSHAgent_UsePageant,

@@ -1,0 +1,277 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish (e.g. v2.8.0-ospasskeys.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  QT_VERSION: "6.8.3"
+
+jobs:
+  meta:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: meta
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: amd64
+            runner: ubuntu-24.04
+            deb_arch: amd64
+          - id: arm64
+            runner: ubuntu-24.04-arm
+            deb_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    container: debian:trixie
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git curl nodejs \
+            build-essential cmake ninja-build g++ pkg-config asciidoctor \
+            qt6-base-dev qt6-base-private-dev qt6-tools-dev qt6-tools-dev-tools \
+            qt6-l10n-tools qt6-svg-dev \
+            libbotan-3-dev zlib1g-dev libminizip-dev libargon2-dev \
+            libpcsclite-dev libusb-1.0-0-dev libkeyutils-dev \
+            libxi-dev libxtst-dev libqrencode-dev libreadline-dev \
+            libxkbcommon-dev \
+            dpkg-dev
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.sha }}
+          fetch-depth: 0
+
+      - name: Configure
+        run: |
+          cmake -G Ninja -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DWITH_TESTS=OFF \
+            -DWITH_GUI_TESTS=OFF \
+            -DKPXC_FEATURE_BROWSER=ON \
+            -DKPXC_FEATURE_PASSKEYS=ON \
+            -DKPXC_FEATURE_OS_PASSKEYS=ON \
+            -DKPXC_FEATURE_SSHAGENT=ON \
+            -DKPXC_FEATURE_FDOSECRETS=ON \
+            -DKPXC_FEATURE_DOCS=OFF
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Package
+        run: |
+          bash share/linux/ci-pack-deb.sh \
+            --build-dir build \
+            --version "${{ needs.meta.outputs.version }}" \
+            --arch "${{ matrix.deb_arch }}" \
+            --out-dir dist
+          ls -lh dist
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.id }}
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            dist/KeePassXC
+            dist/keepassxc-cli
+            dist/keepassxc-proxy
+            dist/99-keepassxc-uhid.rules
+          if-no-files-found: error
+
+  windows:
+    needs: meta
+    # windows-latest may be VS2025-only; Ninja + msvc-dev-cmd works on both.
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.sha }}
+          fetch-depth: 0
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja
+        shell: pwsh
+        run: choco install ninja -y --no-progress
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'vcpkg'
+          if (Test-Path $root) { Remove-Item -Recurse -Force $root }
+          $baseline = '2475cc332a47b3a63bb3de58293bdab7726613ca'
+          git clone --filter=blob:none --no-checkout https://github.com/microsoft/vcpkg.git $root
+          Push-Location $root
+          git fetch --depth 1 origin $baseline
+          git checkout FETCH_HEAD
+          .\bootstrap-vcpkg.bat -disableMetrics
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg bootstrap failed" }
+          Pop-Location
+          $toolchain = Join-Path $root 'scripts\buildsystems\vcpkg.cmake'
+          if (-not (Test-Path $toolchain)) { throw "missing toolchain: $toolchain" }
+          Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$root"
+          Add-Content -Path $env:GITHUB_ENV -Value "CMAKE_TOOLCHAIN_FILE=$toolchain"
+          Write-Host "VCPKG_ROOT=$root"
+          Write-Host "CMAKE_TOOLCHAIN_FILE=$toolchain"
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          if (-not $env:CMAKE_TOOLCHAIN_FILE) { throw 'CMAKE_TOOLCHAIN_FILE is empty' }
+          if (-not $env:QT_ROOT_DIR) { throw 'QT_ROOT_DIR is empty (install-qt-action)' }
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { throw 'ninja not on PATH' }
+          Write-Host "QT_ROOT_DIR=$env:QT_ROOT_DIR"
+          Write-Host "cl=$(Get-Command cl -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)"
+          cmake -B build -G Ninja `
+            "-DCMAKE_BUILD_TYPE=Release" `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:CMAKE_TOOLCHAIN_FILE" `
+            "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DX_VCPKG_APPLOCAL_DEPS_INSTALL=ON `
+            -DKPXC_FEATURE_BROWSER=ON `
+            -DKPXC_FEATURE_PASSKEYS=ON `
+            -DKPXC_FEATURE_OS_PASSKEYS=ON `
+            -DKPXC_FEATURE_SSHAGENT=ON `
+            -DKPXC_FEATURE_DOCS=OFF `
+            -DWITH_TESTS=OFF `
+            -DKEEPASSXC_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) {
+            Get-ChildItem build -Filter 'CMake*.log' -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "===== $($_.Name) ====="
+              Get-Content $_.FullName -Tail 80
+            }
+            throw "cmake configure failed"
+          }
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --parallel
+
+      - name: Package ZIP + MSIX
+        shell: pwsh
+        run: |
+          if (-not $env:QT_ROOT_DIR) { throw 'QT_ROOT_DIR is empty' }
+          $qtBin = Join-Path $env:QT_ROOT_DIR 'bin'
+          if (-not (Test-Path (Join-Path $qtBin 'windeployqt.exe'))) {
+            throw "windeployqt.exe not found in $qtBin"
+          }
+          Write-Host "Using Qt bin: $qtBin"
+          & "$PSHOME\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -File share/msix/ci-pack-windows.ps1 `
+            -BuildDir (Resolve-Path build).Path `
+            -OutDir (Join-Path (Get-Location) 'dist-win') `
+            -Version '${{ needs.meta.outputs.version }}' `
+            -QtBin $qtBin `
+            -RepoRoot (Get-Location).Path
+          if ($LASTEXITCODE -ne 0) { throw "ci-pack-windows.ps1 failed ($LASTEXITCODE)" }
+          Get-ChildItem dist-win -File | Format-Table Name, Length
+          if (-not (Get-ChildItem dist-win -Filter '*.zip' -ErrorAction SilentlyContinue)) {
+            throw 'portable zip missing'
+          }
+          if (-not (Get-ChildItem dist-win -Filter '*.msix' -ErrorAction SilentlyContinue)) {
+            throw 'msix missing'
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: |
+            dist-win/*.zip
+            dist-win/*.msix
+            dist-win/*.cer
+          if-no-files-found: error
+
+  publish:
+    needs: [meta, linux, windows]
+    if: ${{ always() && needs.meta.result == 'success' && needs.linux.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      - name: Collect release files
+        run: |
+          mkdir -p release
+          find artifacts -type f \( \
+            -name '*.deb' -o -name '*.tar.gz' -o -name '*.zip' -o -name '*.msix' -o \
+            -name '*.cer' -o -name 'SHA256SUMS' -o -name 'KeePassXC' -o \
+            -name 'keepassxc-cli' -o -name 'keepassxc-proxy' -o -name '99-keepassxc-uhid.rules' \
+          \) -print -exec cp -v {} release/ \;
+          # Avoid filename collisions from multi-arch KeePassXC binaries
+          if [ -f artifacts/linux-amd64/KeePassXC ]; then
+            cp artifacts/linux-amd64/KeePassXC release/KeePassXC-linux-amd64
+            cp artifacts/linux-amd64/keepassxc-cli release/keepassxc-cli-linux-amd64
+            cp artifacts/linux-amd64/keepassxc-proxy release/keepassxc-proxy-linux-amd64
+          fi
+          if [ -f artifacts/linux-arm64/KeePassXC ]; then
+            cp artifacts/linux-arm64/KeePassXC release/KeePassXC-linux-arm64
+            cp artifacts/linux-arm64/keepassxc-cli release/keepassxc-cli-linux-arm64
+            cp artifacts/linux-arm64/keepassxc-proxy release/keepassxc-proxy-linux-arm64
+          fi
+          rm -f release/KeePassXC release/keepassxc-cli release/keepassxc-proxy 2>/dev/null || true
+          (
+            cd release
+            sha256sum * > SHA256SUMS
+          )
+          ls -lh release
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: KeePassXC OS Passkeys ${{ needs.meta.outputs.version }}
+          generate_release_notes: true
+          files: release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

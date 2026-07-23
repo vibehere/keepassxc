@@ -18,7 +18,7 @@
 #include "PasskeyImporter.h"
 #include "PasskeyImportDialog.h"
 #include "browser/BrowserMessageBuilder.h"
-#include "browser/BrowserPasskeys.h"
+#include "passkeys/BrowserPasskeys.h"
 #include "browser/BrowserService.h"
 #include "core/Entry.h"
 #include "core/Group.h"

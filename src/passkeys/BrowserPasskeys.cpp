@@ -16,11 +16,12 @@
  */
 
 #include "BrowserPasskeys.h"
-#include "BrowserMessageBuilder.h"
-#include "BrowserService.h"
+#include "PasskeyEncoding.h"
+
 #include "PasskeyUtils.h"
 #include "config-keepassx.h"
 #include "crypto/Random.h"
+#include <QCryptographicHash>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QtEndian>
@@ -35,6 +36,40 @@
 #include <botan/sodium.h>
 
 #include <bitset>
+#include <memory>
+
+namespace
+{
+QByteArray ecdsaP1363ToDer(const QByteArray& p1363)
+{
+    if (p1363.size() != 64) {
+        return p1363;
+    }
+
+    auto encodeInt = [](QByteArray half) {
+        int i = 0;
+        while (i < half.size() - 1 && static_cast<unsigned char>(half.at(i)) == 0) {
+            ++i;
+        }
+        half = half.mid(i);
+        if (static_cast<unsigned char>(half.at(0)) & 0x80) {
+            half.prepend('\0');
+        }
+        QByteArray out;
+        out.append(char(0x02));
+        out.append(char(half.size()));
+        out.append(half);
+        return out;
+    };
+
+    const QByteArray body = encodeInt(p1363.left(32)) + encodeInt(p1363.mid(32));
+    QByteArray der;
+    der.append(char(0x30));
+    der.append(char(body.size()));
+    der.append(body);
+    return der;
+}
+} // namespace
 
 Q_GLOBAL_STATIC(BrowserPasskeys, s_browserPasskeys);
 
@@ -74,7 +109,7 @@ PublicKeyCredential BrowserPasskeys::buildRegisterPublicKeyCredential(const QJso
     const auto clientDataJson = credentialCreationOptions["clientDataJSON"].toString();
     const auto extensions = credentialCreationOptions["extensions"].toString();
     const auto credentialId = testingVariables.credentialId.isEmpty()
-                                  ? browserMessageBuilder()->getRandomBytesAsBase64(ID_BYTES)
+                                  ? passkeyEncoding()->getRandomBytesAsBase64(ID_BYTES)
                                   : testingVariables.credentialId;
 
     // Credential private key
@@ -97,15 +132,15 @@ PublicKeyCredential BrowserPasskeys::buildRegisterPublicKeyCredential(const QJso
 
     // Response
     QJsonObject responseObject;
-    responseObject["attestationObject"] = browserMessageBuilder()->getBase64FromArray(attestationObject);
-    responseObject["clientDataJSON"] = browserMessageBuilder()->getBase64FromArray(clientDataJson.toUtf8());
+    responseObject["attestationObject"] = passkeyEncoding()->getBase64FromArray(attestationObject);
+    responseObject["clientDataJSON"] = passkeyEncoding()->getBase64FromArray(clientDataJson.toUtf8());
     responseObject["clientExtensionResults"] = credentialCreationOptions["clientExtensionResults"];
 
     // Additions for extension side functions
-    responseObject["authenticatorData"] = browserMessageBuilder()->getBase64FromArray(authenticatorData);
+    responseObject["authenticatorData"] = passkeyEncoding()->getBase64FromArray(authenticatorData);
 
     // PublicKey
-    responseObject["publicKey"] = browserMessageBuilder()->getBase64FromArray(privateKey.spkiPublicKey);
+    responseObject["publicKey"] = passkeyEncoding()->getBase64FromArray(privateKey.spkiPublicKey);
     responseObject["publicKeyAlgorithm"] = alg;
 
     // PublicKeyCredential
@@ -133,21 +168,32 @@ QJsonObject BrowserPasskeys::buildGetPublicKeyCredential(const QJsonObject& asse
         return {};
     }
 
-    const auto authenticatorData = buildAuthenticatorData(
-        assertionOptions["rpId"].toString(), assertionOptions["extensions"].toString(), beFlag, bsFlag);
+    const bool osCtap = assertionOptions.contains(QStringLiteral("_osClientDataHash"));
+    const auto authenticatorData = buildAuthenticatorData(assertionOptions["rpId"].toString(),
+                                                          assertionOptions["extensions"].toString(),
+                                                          osCtap ? false : beFlag,
+                                                          osCtap ? false : bsFlag,
+                                                          true);
     const auto clientDataJson = assertionOptions["clientDataJson"].toString();
     const auto clientDataArray = clientDataJson.toUtf8();
 
-    const auto signature = buildSignature(authenticatorData, clientDataArray, privateKeyPem);
+    QByteArray signature;
+    if (osCtap) {
+        const auto prehash =
+            passkeyEncoding()->getArrayFromBase64(assertionOptions.value(QStringLiteral("_osClientDataHash")).toString());
+        signature = buildSignature(authenticatorData, prehash, privateKeyPem, true);
+    } else {
+        signature = buildSignature(authenticatorData, clientDataArray, privateKeyPem, false);
+    }
     if (signature.isEmpty()) {
         return {};
     }
 
     QJsonObject responseObject;
-    responseObject["authenticatorData"] = browserMessageBuilder()->getBase64FromArray(authenticatorData);
-    responseObject["clientDataJSON"] = browserMessageBuilder()->getBase64FromArray(clientDataArray);
+    responseObject["authenticatorData"] = passkeyEncoding()->getBase64FromArray(authenticatorData);
+    responseObject["clientDataJSON"] = passkeyEncoding()->getBase64FromArray(clientDataArray);
     responseObject["clientExtensionResults"] = assertionOptions["clientExtensionResults"];
-    responseObject["signature"] = browserMessageBuilder()->getBase64FromArray(signature);
+    responseObject["signature"] = passkeyEncoding()->getBase64FromArray(signature);
     responseObject["userHandle"] = userHandle;
 
     QJsonObject publicKeyCredential;
@@ -169,14 +215,14 @@ QByteArray BrowserPasskeys::buildAttestationObject(const QJsonObject& credential
     QByteArray result;
 
     // Create SHA256 hash from rpId
-    const auto rpIdHash = browserMessageBuilder()->getSha256Hash(credentialCreationOptions["rp"]["id"].toString());
+    const auto rpIdHash = passkeyEncoding()->getSha256Hash(credentialCreationOptions["rp"]["id"].toString());
     result.append(rpIdHash);
 
-    // Use default flags
+        const bool osCtap = credentialCreationOptions.contains(QStringLiteral("_osClientDataHash"));
     const auto flags = setFlagsFromJson(QJsonObject({{"ED", !extensions.isEmpty()},
                                                      {"AT", true},
-                                                     {"BS", DEFAULT_BS_FLAG},
-                                                     {"BE", DEFAULT_BE_FLAG},
+                                                     {"BS", osCtap ? false : DEFAULT_BS_FLAG},
+                                                     {"BE", osCtap ? false : DEFAULT_BE_FLAG},
                                                      {"UV", true},
                                                      {"UP", true}}));
     result.append(flags);
@@ -186,23 +232,27 @@ QByteArray BrowserPasskeys::buildAttestationObject(const QJsonObject& credential
     result.append(QByteArray::fromRawData(counter, 4));
 
     // AAGUID
-    result.append(browserMessageBuilder()->getArrayFromHexString(AAGUID));
+    result.append(passkeyEncoding()->getArrayFromHexString(AAGUID));
 
     // Credential length
     const char credentialLength[2] = {0x00, ID_BYTES};
     result.append(QByteArray::fromRawData(credentialLength, 2));
 
-    // Credential Id
-    result.append(QByteArray::fromBase64(
-        testingVariables.credentialId.isEmpty() ? credentialId.toUtf8() : testingVariables.credentialId.toUtf8(),
-        QByteArray::Base64UrlEncoding));
+        const QByteArray credentialIdRaw =
+        passkeyEncoding()->getArrayFromBase64(testingVariables.credentialId.isEmpty() ? credentialId
+                                                                                        : testingVariables.credentialId);
+    if (credentialIdRaw.size() != ID_BYTES) {
+        qWarning("BrowserPasskeys::buildAttestationObject: invalid credential id length %d", credentialIdRaw.size());
+        return {};
+    }
+    result.append(credentialIdRaw);
 
     // Credential public key
     result.append(cborEncodedPublicKey);
 
     // Add extension data if available
     if (!extensions.isEmpty()) {
-        result.append(browserMessageBuilder()->getArrayFromBase64(extensions));
+        result.append(passkeyEncoding()->getArrayFromBase64(extensions));
     }
 
     // The final result should be CBOR encoded
@@ -213,15 +263,16 @@ QByteArray BrowserPasskeys::buildAttestationObject(const QJsonObject& credential
 QByteArray BrowserPasskeys::buildAuthenticatorData(const QString& rpId,
                                                    const QString& extensions,
                                                    const bool beFlag,
-                                                   const bool bsFlag)
+                                                   const bool bsFlag,
+                                                   const bool uvFlag)
 {
     QByteArray result;
 
-    const auto rpIdHash = browserMessageBuilder()->getSha256Hash(rpId);
+    const auto rpIdHash = passkeyEncoding()->getSha256Hash(rpId);
     result.append(rpIdHash);
 
     const auto flags = setFlagsFromJson(QJsonObject(
-        {{"ED", !extensions.isEmpty()}, {"AT", false}, {"BS", bsFlag}, {"BE", beFlag}, {"UV", true}, {"UP", true}}));
+        {{"ED", !extensions.isEmpty()}, {"AT", false}, {"BS", bsFlag}, {"BE", beFlag}, {"UV", uvFlag}, {"UP", true}}));
     result.append(flags);
 
     // Signature counter (not supported, always 0
@@ -229,7 +280,7 @@ QByteArray BrowserPasskeys::buildAuthenticatorData(const QString& rpId,
     result.append(QByteArray::fromRawData(counter, 4));
 
     if (!extensions.isEmpty()) {
-        result.append(browserMessageBuilder()->getArrayFromBase64(extensions));
+        result.append(passkeyEncoding()->getArrayFromBase64(extensions));
     }
 
     return result;
@@ -249,8 +300,8 @@ AttestationKeyPair BrowserPasskeys::buildCredentialPrivateKey(int alg, const Tes
     QByteArray pem;
 
     if (!testingVariables.first.isEmpty() && !testingVariables.second.isEmpty()) {
-        firstPart = browserMessageBuilder()->getArrayFromBase64(testingVariables.first);
-        secondPart = browserMessageBuilder()->getArrayFromBase64(testingVariables.second);
+        firstPart = passkeyEncoding()->getArrayFromBase64(testingVariables.first);
+        secondPart = passkeyEncoding()->getArrayFromBase64(testingVariables.second);
     } else {
         if (alg == WebAuthnAlgorithms::ES256) {
             try {
@@ -262,13 +313,21 @@ AttestationKeyPair BrowserPasskeys::buildCredentialPrivateKey(int alg, const Tes
                 const auto& publicPoint = privateKey.public_point();
                 auto x = publicPoint.get_affine_x();
                 auto y = publicPoint.get_affine_y();
-                firstPart = bigIntToQByteArray(x);
-                secondPart = bigIntToQByteArray(y);
+                                const auto xBytes = x.serialize<std::vector<uint8_t>>(32);
+                const auto yBytes = y.serialize<std::vector<uint8_t>>(32);
+                firstPart = QByteArray(reinterpret_cast<const char*>(xBytes.data()), static_cast<int>(xBytes.size()));
+                secondPart = QByteArray(reinterpret_cast<const char*>(yBytes.data()), static_cast<int>(yBytes.size()));
+                if (firstPart.size() != 32 || secondPart.size() != 32) {
+                    qWarning("BrowserWebAuthn::buildCredentialPrivateKey: invalid EC point size %d/%d",
+                             firstPart.size(),
+                             secondPart.size());
+                    return {};
+                }
 
                 auto publicKey =
                     Botan::ECDSA_PublicKey(privateKey.algorithm_identifier(), privateKey.public_key_bits());
                 auto publicKeySpki = publicKey.subject_public_key();
-                spki = browserMessageBuilder()->getQByteArray(publicKeySpki.data(), publicKeySpki.size());
+                spki = passkeyEncoding()->getQByteArray(publicKeySpki.data(), publicKeySpki.size());
 
                 auto privateKeyPem = Botan::PKCS8::PEM_encode(privateKey);
                 pem = QByteArray::fromStdString(privateKeyPem);
@@ -286,7 +345,7 @@ AttestationKeyPair BrowserPasskeys::buildCredentialPrivateKey(int alg, const Tes
 
                 auto publicKey = Botan::RSA_PublicKey(privateKey.algorithm_identifier(), privateKey.public_key_bits());
                 auto publicKeySpki = publicKey.subject_public_key();
-                spki = browserMessageBuilder()->getQByteArray(publicKeySpki.data(), publicKeySpki.size());
+                spki = passkeyEncoding()->getQByteArray(publicKeySpki.data(), publicKeySpki.size());
 
                 auto privateKeyPem = Botan::PKCS8::PEM_encode(privateKey);
                 pem = QByteArray::fromStdString(privateKeyPem);
@@ -303,13 +362,13 @@ AttestationKeyPair BrowserPasskeys::buildCredentialPrivateKey(int alg, const Tes
 #else
                 auto privateKeyBits = privateKey.get_private_key();
 #endif
-                firstPart = browserMessageBuilder()->getQByteArray(publicKeyBits.data(), publicKeyBits.size());
-                secondPart = browserMessageBuilder()->getQByteArray(privateKeyBits.data(), privateKeyBits.size());
+                firstPart = passkeyEncoding()->getQByteArray(publicKeyBits.data(), publicKeyBits.size());
+                secondPart = passkeyEncoding()->getQByteArray(privateKeyBits.data(), privateKeyBits.size());
 
                 auto publicKey =
                     Botan::Ed25519_PublicKey(privateKey.algorithm_identifier(), privateKey.public_key_bits());
                 auto publicKeySpki = publicKey.subject_public_key();
-                spki = browserMessageBuilder()->getQByteArray(publicKeySpki.data(), publicKeySpki.size());
+                spki = passkeyEncoding()->getQByteArray(publicKeySpki.data(), publicKeySpki.size());
 
                 auto privateKeyPem = Botan::PKCS8::PEM_encode(privateKey);
                 pem = QByteArray::fromStdString(privateKeyPem);
@@ -334,10 +393,13 @@ AttestationKeyPair BrowserPasskeys::buildCredentialPrivateKey(int alg, const Tes
 }
 
 QByteArray BrowserPasskeys::buildSignature(const QByteArray& authenticatorData,
-                                           const QByteArray& clientData,
-                                           const QString& privateKeyPem)
+                                           const QByteArray& clientDataOrHash,
+                                           const QString& privateKeyPem,
+                                           bool clientDataIsPrehashed)
 {
-    const auto clientDataHash = browserMessageBuilder()->getSha256Hash(clientData);
+    const auto clientDataHash = clientDataIsPrehashed
+                                    ? clientDataOrHash
+                                    : QCryptographicHash::hash(clientDataOrHash, QCryptographicHash::Sha256);
     const auto attToBeSigned = authenticatorData + clientDataHash;
 
     try {
@@ -345,42 +407,38 @@ QByteArray BrowserPasskeys::buildSignature(const QByteArray& authenticatorData,
         Botan::DataSource_Memory dataSource(reinterpret_cast<const uint8_t*>(privateKeyArray.constData()),
                                             privateKeyArray.size());
 
-        const auto key = Botan::PKCS8::load_key(dataSource).release();
-        const auto privateKeyBytes = key->private_key_bits();
-        const auto algName = key->algo_name();
-        const auto algId = key->algorithm_identifier();
+        std::unique_ptr<Botan::Private_Key> key(Botan::PKCS8::load_key(dataSource));
+        const QString algName = QString::fromStdString(key->algo_name());
 
         std::vector<uint8_t> rawSignature;
-        if (algName == "ECDSA") {
-            Botan::ECDSA_PrivateKey privateKey(algId, privateKeyBytes);
+        if (algName.contains(QStringLiteral("ECDSA"))) {
 #ifdef WITH_BOTAN3
-            Botan::PK_Signer signer(
-                privateKey, *randomGen()->getRng(), "EMSA1(SHA-256)", Botan::Signature_Format::DerSequence);
+            Botan::PK_Signer signer(*key, *randomGen()->getRng(), "SHA-256", Botan::Signature_Format::DerSequence);
 #else
-            Botan::PK_Signer signer(privateKey, *randomGen()->getRng(), "EMSA1(SHA-256)", Botan::DER_SEQUENCE);
+            Botan::PK_Signer signer(*key, *randomGen()->getRng(), "EMSA1(SHA-256)", Botan::DER_SEQUENCE);
 #endif
 
             signer.update(reinterpret_cast<const uint8_t*>(attToBeSigned.constData()), attToBeSigned.size());
             rawSignature = signer.signature(*randomGen()->getRng());
-        } else if (algName == "RSA") {
-            Botan::RSA_PrivateKey privateKey(algId, privateKeyBytes);
-            Botan::PK_Signer signer(privateKey, *randomGen()->getRng(), "EMSA3(SHA-256)");
+        } else if (algName.contains(QStringLiteral("RSA"))) {
+            Botan::PK_Signer signer(*key, *randomGen()->getRng(), "EMSA3(SHA-256)");
 
             signer.update(reinterpret_cast<const uint8_t*>(attToBeSigned.constData()), attToBeSigned.size());
             rawSignature = signer.signature(*randomGen()->getRng());
-        } else if (algName == "Ed25519") {
-            Botan::Ed25519_PrivateKey privateKey(algId, privateKeyBytes);
-            // "Pure" here means signing message directly. SHA-512 is only used with pre-hashed Ed25519 (Ed25519ph).
-            Botan::PK_Signer signer(privateKey, *randomGen()->getRng(), "Pure");
+        } else if (algName.contains(QStringLiteral("Ed25519"))) {
+            Botan::PK_Signer signer(*key, *randomGen()->getRng(), "Pure");
 
             signer.update(reinterpret_cast<const uint8_t*>(attToBeSigned.constData()), attToBeSigned.size());
             rawSignature = signer.signature(*randomGen()->getRng());
         } else {
-            qWarning("BrowserWebAuthn::buildSignature: Algorithm not supported");
+            qWarning("BrowserWebAuthn::buildSignature: Algorithm not supported: %s", qPrintable(algName));
             return {};
         }
 
-        auto signature = QByteArray(reinterpret_cast<char*>(rawSignature.data()), rawSignature.size());
+        auto signature = QByteArray(reinterpret_cast<char*>(rawSignature.data()), static_cast<int>(rawSignature.size()));
+        if (signature.size() == 64 && algName.contains(QStringLiteral("ECDSA"))) {
+            signature = ecdsaP1363ToDer(signature);
+        }
         return signature;
     } catch (std::exception& e) {
         qWarning("BrowserWebAuthn::buildSignature: Could not sign key: %s", e.what());
@@ -402,13 +460,13 @@ QJsonObject BrowserPasskeys::parseAuthData(const QByteArray& authData) const
     auto credentialId = authData.mid(AuthDataOffsets::CREDENTIAL_ID, credLen);
     auto publicKey = authData.mid(AuthDataOffsets::CREDENTIAL_ID + credLen);
 
-    QJsonObject credentialDataJson({{"aaguid", browserMessageBuilder()->getBase64FromArray(aaGuid)},
-                                    {"credentialId", browserMessageBuilder()->getBase64FromArray(credentialId)},
+    QJsonObject credentialDataJson({{"aaguid", passkeyEncoding()->getBase64FromArray(aaGuid)},
+                                    {"credentialId", passkeyEncoding()->getBase64FromArray(credentialId)},
                                     {"publicKey", m_browserCbor.getJsonFromCborData(publicKey)}});
 
     QJsonObject result({{"credentialData", credentialDataJson},
                         {"flags", parseFlags(flags)},
-                        {"rpIdHash", browserMessageBuilder()->getBase64FromArray(rpIdHash)},
+                        {"rpIdHash", passkeyEncoding()->getBase64FromArray(rpIdHash)},
                         {"signatureCounter", QJsonValue(qFromBigEndian<int>(counter))}});
 
     return result;
@@ -458,21 +516,35 @@ char BrowserPasskeys::setFlagsFromJson(const QJsonObject& flags) const
     return flagBits;
 }
 
-// Returns the first supported algorithm from the pubKeyCredParams list (only support ES256, RS256 and EdDSA for now)
 WebAuthnAlgorithms BrowserPasskeys::getAlgorithmFromPublicKey(const QJsonObject& credentialCreationOptions) const
 {
     const auto pubKeyCredParams = credentialCreationOptions["credTypesAndPubKeyAlgs"].toArray();
-    if (!pubKeyCredParams.isEmpty()) {
-        const auto alg = pubKeyCredParams.first()["alg"].toInt();
-        if (alg == WebAuthnAlgorithms::ES256 || alg == WebAuthnAlgorithms::RS256 || alg == WebAuthnAlgorithms::EDDSA) {
-            return static_cast<WebAuthnAlgorithms>(alg);
+    bool hasEs256 = false;
+    bool hasRs256 = false;
+    bool hasEddsa = false;
+    for (const auto& p : pubKeyCredParams) {
+        const auto alg = p.toObject().value(QStringLiteral("alg")).toInt();
+        if (alg == WebAuthnAlgorithms::ES256) {
+            hasEs256 = true;
+        } else if (alg == WebAuthnAlgorithms::RS256) {
+            hasRs256 = true;
+        } else if (alg == WebAuthnAlgorithms::EDDSA) {
+            hasEddsa = true;
         }
     }
-
+    if (hasEs256) {
+        return WebAuthnAlgorithms::ES256;
+    }
+    if (hasRs256) {
+        return WebAuthnAlgorithms::RS256;
+    }
+    if (hasEddsa) {
+        return WebAuthnAlgorithms::EDDSA;
+    }
     return WebAuthnAlgorithms::ES256;
 }
 
-QByteArray BrowserPasskeys::bigIntToQByteArray(Botan::BigInt& bigInt) const
+QByteArray BrowserPasskeys::bigIntToQByteArray(Botan::BigInt& bigInt, int fixedSize) const
 {
     auto hexString = QString(bigInt.to_hex_string().c_str());
 
@@ -480,6 +552,17 @@ QByteArray BrowserPasskeys::bigIntToQByteArray(Botan::BigInt& bigInt) const
     if (hexString.startsWith(("0x"))) {
         hexString.remove(0, 2);
     }
+    if (hexString.size() % 2 != 0) {
+        hexString.prepend(QLatin1Char('0'));
+    }
 
-    return browserMessageBuilder()->getArrayFromHexString(hexString);
+    QByteArray out = passkeyEncoding()->getArrayFromHexString(hexString);
+    if (fixedSize > 0) {
+        if (out.size() < fixedSize) {
+            out.prepend(QByteArray(fixedSize - out.size(), '\0'));
+        } else if (out.size() > fixedSize) {
+            out = out.right(fixedSize);
+        }
+    }
+    return out;
 }

@@ -18,8 +18,8 @@
 #include "PasskeyExporter.h"
 #include "PasskeyExportDialog.h"
 
-#include "browser/BrowserPasskeys.h"
-#include "browser/PasskeyUtils.h"
+#include "passkeys/BrowserPasskeys.h"
+#include "passkeys/PasskeyUtils.h"
 #include "core/Entry.h"
 #include "core/EntryAttributes.h"
 #include "core/Tools.h"
