@@ -55,12 +55,32 @@ option(KPXC_MINIMAL "Build KeePassXC with the minimal feature set required for b
 option(KPXC_FEATURE_BROWSER "Browser integration and passkeys support" ON)
 option(KPXC_FEATURE_SSHAGENT "SSH Agent integration" ON)
 option(KPXC_FEATURE_FDOSECRETS "freedesktop.org Secret Service integration; replace system keyring" ON)
+option(KPXC_FEATURE_PASSKEYS "Shared passkey engine (WebAuthn crypto and KDBX storage)" ON)
+option(KPXC_FEATURE_OS_PASSKEYS "Register as OS passkey provider (Windows MSIX plugin / Linux UHID FIDO)" ON)
 
 if(KPXC_MINIMAL)
     # Disable advanced features in minimal mode
     set(KPXC_FEATURE_BROWSER OFF)
     set(KPXC_FEATURE_SSHAGENT OFF)
     set(KPXC_FEATURE_FDOSECRETS OFF)
+    set(KPXC_FEATURE_PASSKEYS OFF)
+    set(KPXC_FEATURE_OS_PASSKEYS OFF)
+endif()
+
+# Passkeys are required for browser passkeys and for the OS provider
+if(KPXC_FEATURE_BROWSER OR KPXC_FEATURE_OS_PASSKEYS)
+    set(KPXC_FEATURE_PASSKEYS ON)
+endif()
+
+# OS passkeys: Windows (WebAuthn plugin) or Linux (virtual FIDO2 via uhid)
+if(KPXC_FEATURE_OS_PASSKEYS AND NOT WIN32 AND NOT (UNIX AND NOT APPLE AND NOT HAIKU))
+    message(STATUS "Disabling KPXC_FEATURE_OS_PASSKEYS (unsupported platform)")
+    set(KPXC_FEATURE_OS_PASSKEYS OFF)
+endif()
+
+if(KPXC_FEATURE_OS_PASSKEYS AND NOT KPXC_FEATURE_PASSKEYS)
+    message(STATUS "Disabling KPXC_FEATURE_OS_PASSKEYS because KPXC_FEATURE_PASSKEYS is disabled")
+    set(KPXC_FEATURE_OS_PASSKEYS OFF)
 endif()
 
 # Minor Feature Flags
@@ -81,6 +101,8 @@ endif()
 
 # Define feature summaries
 add_feature_info("Browser" KPXC_FEATURE_BROWSER "Browser integration and passkeys support")
+add_feature_info("Passkeys" KPXC_FEATURE_PASSKEYS "Shared passkey engine and KDBX storage")
+add_feature_info("OS Passkeys" KPXC_FEATURE_OS_PASSKEYS "OS passkey provider (Windows WebAuthn plugin / Linux UHID FIDO2)")
 add_feature_info("SSH Agent" KPXC_FEATURE_SSHAGENT "SSH Agent integration")
 if(UNIX AND NOT APPLE)
     add_feature_info("Secret Service" KPXC_FEATURE_FDOSECRETS "Replace system keyring with freedesktop.org Secret Service integration")

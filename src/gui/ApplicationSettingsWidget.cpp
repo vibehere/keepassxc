@@ -42,6 +42,9 @@
 #ifdef KPXC_FEATURE_BROWSER
 #include "browser/BrowserSettingsPage.h"
 #endif
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+#include "gui/ospasskeys/OsPasskeysSettingsPage.h"
+#endif
 
 class ApplicationSettingsWidget::ExtraPage
 {
@@ -85,6 +88,9 @@ ApplicationSettingsWidget::ApplicationSettingsWidget(QWidget* parent)
     addPage(tr("Security"), icons()->icon("security-high"), m_secWidget);
 #ifdef KPXC_FEATURE_BROWSER
     addSettingsPage(new BrowserSettingsPage());
+#endif
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+    addSettingsPage(new OsPasskeysSettingsPage());
 #endif
 
     const bool showDesktopPortalsPreference =

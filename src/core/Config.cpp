@@ -191,6 +191,9 @@ static const QHash<Config::ConfigKey, ConfigDirective> configStrings = {
     {Config::Browser_CustomExtensionId, {QS("Browser/CustomExtensionId"), Local, {}}},
 #endif
 
+    // OS Passkeys (Windows plugin authenticator — opt-in)
+    {Config::OsPasskeys_Enabled, {QS("OsPasskeys/Enabled"), Roaming, false}},
+
     // SSHAgent
     {Config::SSHAgent_Enabled, {QS("SSHAgent/Enabled"), Roaming, false}},
     {Config::SSHAgent_UseOpenSSH, {QS("SSHAgent/UseOpenSSH"), Roaming, false}},

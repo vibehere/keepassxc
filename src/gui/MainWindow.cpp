@@ -68,6 +68,14 @@
 #include "fdosecrets/FdoSecretsPlugin.h"
 #endif
 
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+#ifdef Q_OS_WIN
+#include "ospasskeys/windows/OsPasskeyBootstrap.h"
+#elif defined(Q_OS_LINUX)
+#include "ospasskeys/linux/OsPasskeyBootstrap.h"
+#endif
+#endif
+
 #ifdef KPXC_FEATURE_BROWSER
 #include "browser/BrowserService.h"
 #endif
@@ -231,6 +239,10 @@ MainWindow::MainWindow()
     connect(fdoSS, &FdoSecretsPlugin::requestShowNotification, this, &MainWindow::displayDesktopNotification);
     fdoSS->updateServiceState();
     m_ui->settingsWidget->addSettingsPage(fdoSS);
+#endif
+
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+    OsPasskeyBootstrap::start(m_ui->tabWidget);
 #endif
 
     connect(YubiKey::instance(), SIGNAL(userInteractionRequest()), SLOT(showYubiKeyPopup()), Qt::QueuedConnection);
@@ -661,6 +673,9 @@ MainWindow::MainWindow()
 
 MainWindow::~MainWindow()
 {
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+    OsPasskeyBootstrap::stop();
+#endif
 #ifdef KPXC_FEATURE_SSHAGENT
     sshAgent()->removeAllIdentities();
 #endif

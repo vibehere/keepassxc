@@ -1,0 +1,2 @@
+# KeePassXC virtual FIDO2 (uhid) — allow users in group keepassxc-uhid (or plugdev) to open /dev/uhid
+KERNEL=="uhid", GROUP="plugdev", MODE="0660"

@@ -18,8 +18,8 @@
 #include "ReportsWidgetPasskeys.h"
 #include "ui_ReportsWidgetPasskeys.h"
 
-#include "browser/BrowserPasskeys.h"
-#include "browser/PasskeyUtils.h"
+#include "passkeys/BrowserPasskeys.h"
+#include "passkeys/PasskeyUtils.h"
 #include "core/AsyncTask.h"
 #include "core/EntryAttributes.h"
 #include "core/Group.h"

@@ -27,6 +27,7 @@
 #include "BrowserPasskeysClient.h"
 #include "BrowserPasskeysConfirmationDialog.h"
 #include "BrowserSettings.h"
+#include "PasskeyEngine.h"
 #include "PasskeyUtils.h"
 #include "core/EntryAttributes.h"
 #include "core/Tools.h"
@@ -856,18 +857,7 @@ void BrowserService::addPasskeyToEntry(Entry* entry,
         }
     }
 
-    entry->beginUpdate();
-
-    entry->attributes()->set(EntryAttributes::KPEX_PASSKEY_USERNAME, username);
-    entry->attributes()->set(EntryAttributes::KPEX_PASSKEY_CREDENTIAL_ID, credentialId, true);
-    entry->attributes()->set(EntryAttributes::KPEX_PASSKEY_PRIVATE_KEY_PEM, privateKey, true);
-    entry->attributes()->set(EntryAttributes::KPEX_PASSKEY_RELYING_PARTY, rpId);
-    entry->attributes()->set(EntryAttributes::KPEX_PASSKEY_USER_HANDLE, userHandle, true);
-    entry->attributes()->set(EntryAttributes::KPEX_PASSKEY_FLAG_BE, "1");
-    entry->attributes()->set(EntryAttributes::KPEX_PASSKEY_FLAG_BS, "1");
-    entry->addTag(tr("Passkey"));
-
-    entry->endUpdate();
+    passkeyEngine()->storePasskeyOnEntry(entry, rpId, rpName, username, credentialId, userHandle, privateKey);
 }
 
 void BrowserService::addEntry(const EntryParameters& entryParameters,
