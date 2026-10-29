@@ -32,3 +32,11 @@ out/
 # vcpkg
 vcpkg_installed*/
 
+# Local build / packaging artifacts (may contain machine paths)
+*.log
+share/linux/debs/
+share/linux/*.log
+share/msix/staging/
+share/msix/out/
+share/msix/certs/
+
