@@ -68,6 +68,17 @@
 #include "fdosecrets/FdoSecretsPlugin.h"
 #endif
 
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+#ifdef Q_OS_WIN
+#include "ospasskeys/windows/OsPasskeyBootstrap.h"
+#include "ospasskeys/windows/OsPasskeyService.h"
+#include "ospasskeys/windows/PluginRegistrationManager.h"
+#elif defined(Q_OS_LINUX)
+#include "ospasskeys/linux/OsPasskeyBootstrap.h"
+#include "ospasskeys/linux/OsPasskeyService.h"
+#endif
+#endif
+
 #ifdef KPXC_FEATURE_BROWSER
 #include "browser/BrowserService.h"
 #endif
@@ -231,6 +242,49 @@ MainWindow::MainWindow()
     connect(fdoSS, &FdoSecretsPlugin::requestShowNotification, this, &MainWindow::displayDesktopNotification);
     fdoSS->updateServiceState();
     m_ui->settingsWidget->addSettingsPage(fdoSS);
+#endif
+
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+    OsPasskeyBootstrap::start(m_ui->tabWidget);
+
+    m_osPasskeysAction = new QAction(this);
+    m_osPasskeysAction->setObjectName(QStringLiteral("actionOsPasskeys"));
+    m_osPasskeysAction->setCheckable(true);
+    m_osPasskeysAction->setIcon(icons()->icon("passkey"));
+    m_osPasskeysAction->setToolTip(
+        tr("Allow browsers to use passkeys from unlocked databases (off by default)."));
+    m_osPasskeysAction->setVisible(false);
+    m_ui->menuTools->insertAction(m_ui->actionSettings, m_osPasskeysAction);
+    m_ui->toolBar->insertAction(m_ui->actionSettings, m_osPasskeysAction);
+    if (auto* btn = qobject_cast<QToolButton*>(m_ui->toolBar->widgetForAction(m_osPasskeysAction))) {
+        btn->setObjectName(QStringLiteral("osPasskeysToolButton"));
+        btn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        // Keep checked state readable without the desktop accent (often cyan).
+        btn->setStyleSheet(QStringLiteral(
+            "QToolButton#osPasskeysToolButton {"
+            "  padding: 2px 8px;"
+            "  border: 1px solid transparent;"
+            "  border-radius: 3px;"
+            "}"
+            "QToolButton#osPasskeysToolButton:checked {"
+            "  background-color: #3A3A3C;"
+            "  border: 1px solid #6E6E72;"
+            "  color: #F0F0F0;"
+            "}"
+            "QToolButton#osPasskeysToolButton:checked:hover {"
+            "  background-color: #454548;"
+            "}"
+            "QToolButton#osPasskeysToolButton:!checked {"
+            "  background-color: transparent;"
+            "  border: 1px solid #555558;"
+            "  color: #D0D0D0;"
+            "}"
+            "QToolButton#osPasskeysToolButton:!checked:hover {"
+            "  background-color: #2F2F32;"
+            "}"));
+    }
+    syncOsPasskeysAction();
+    connect(m_osPasskeysAction, &QAction::toggled, this, &MainWindow::toggleOsPasskeys);
 #endif
 
     connect(YubiKey::instance(), SIGNAL(userInteractionRequest()), SLOT(showYubiKeyPopup()), Qt::QueuedConnection);
@@ -661,6 +715,9 @@ MainWindow::MainWindow()
 
 MainWindow::~MainWindow()
 {
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+    OsPasskeyBootstrap::stop();
+#endif
 #ifdef KPXC_FEATURE_SSHAGENT
     sshAgent()->removeAllIdentities();
 #endif
@@ -1004,6 +1061,15 @@ void MainWindow::updateMenuActionState()
 #ifdef KPXC_FEATURE_BROWSER
     m_ui->actionPasskeys->setEnabled(inDatabase || inReports);
     m_ui->actionImportPasskey->setEnabled(inDatabase);
+#endif
+
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+    if (m_osPasskeysAction) {
+        const bool showToggle = hasLockableDatabase;
+        m_osPasskeysAction->setVisible(showToggle);
+        m_osPasskeysAction->setEnabled(showToggle);
+        syncOsPasskeysAction();
+    }
 #endif
 
     m_searchWidgetAction->setEnabled(inDatabase);
@@ -1481,6 +1547,46 @@ void MainWindow::clearSSHAgent()
     displayGlobalMessage(agent->errorString(), ret ? MessageWidget::Positive : KMessageWidget::Error, false);
 #endif
 }
+
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+void MainWindow::syncOsPasskeysAction()
+{
+    if (!m_osPasskeysAction) {
+        return;
+    }
+    const bool on = osPasskeyService()->isEnabled();
+    m_osPasskeysAction->blockSignals(true);
+    m_osPasskeysAction->setChecked(on);
+    m_osPasskeysAction->setText(on ? tr("OS Passkeys: On") : tr("OS Passkeys: Off"));
+    m_osPasskeysAction->blockSignals(false);
+}
+
+void MainWindow::toggleOsPasskeys(bool enabled)
+{
+    if (!m_osPasskeysAction) {
+        return;
+    }
+
+    if (enabled == osPasskeyService()->isEnabled()) {
+        syncOsPasskeysAction();
+        return;
+    }
+
+    const bool ok = osPasskeyService()->setEnabled(enabled);
+    if (enabled && !ok) {
+#ifdef Q_OS_WIN
+        const QString detail = PluginRegistrationManager::instance()->lastErrorString();
+#else
+        const QString detail = osPasskeyService()->lastError();
+#endif
+        MessageBox::critical(this, tr("OS Passkeys"), tr("Could not enable OS Passkeys:\n\n%1").arg(detail));
+        syncOsPasskeysAction();
+        return;
+    }
+
+    syncOsPasskeysAction();
+}
+#endif
 
 void MainWindow::saveWindowInformation()
 {
