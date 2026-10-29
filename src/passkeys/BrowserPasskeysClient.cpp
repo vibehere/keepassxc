@@ -16,7 +16,8 @@
  */
 
 #include "BrowserPasskeysClient.h"
-#include "BrowserMessageBuilder.h"
+#include "PasskeyEncoding.h"
+#include "PasskeyErrors.h"
 #include "BrowserPasskeys.h"
 #include "PasskeyUtils.h"
 
@@ -91,7 +92,7 @@ int BrowserPasskeysClient::getCredentialCreationOptions(const QJsonObject& publi
     // Unknown values are ignored, but a warning will be still shown just in case
     const auto userVerification = authenticatorSelection["userVerification"].toString();
     if (!passkeyUtils()->isUserVerificationValid(userVerification)) {
-        qWarning() << browserMessageBuilder()->getErrorMessage(ERROR_PASSKEYS_INVALID_USER_VERIFICATION);
+        qWarning() << passkeyEncoding()->getErrorMessage(ERROR_PASSKEYS_INVALID_USER_VERIFICATION);
     }
 
     // Parse requireResidentKey and userVerification
@@ -101,7 +102,7 @@ int BrowserPasskeysClient::getCredentialCreationOptions(const QJsonObject& publi
     // Extensions
     auto extensionObject = publicKeyOptions["extensions"].toObject();
     const auto extensionData = passkeyUtils()->buildExtensionData(extensionObject);
-    const auto extensions = browserMessageBuilder()->getBase64FromArray(extensionData.extensionData);
+    const auto extensions = passkeyEncoding()->getBase64FromArray(extensionData.extensionData);
 
     // Construct the final object
     QJsonObject credentialCreationOptions;
@@ -110,13 +111,20 @@ int BrowserPasskeysClient::getCredentialCreationOptions(const QJsonObject& publi
     credentialCreationOptions["clientDataJSON"] = passkeyUtils()->buildClientDataJson(publicKeyOptions, origin, false);
     credentialCreationOptions["clientExtensionResults"] = extensionData.extensionObject;
     credentialCreationOptions["credTypesAndPubKeyAlgs"] = pubKeyCredParams;
-    credentialCreationOptions["excludeCredentials"] = publicKeyOptions["excludeCredentials"];
+    credentialCreationOptions["excludeCredentials"] = publicKeyOptions["excludeCredentials"].isArray()
+                                                          ? publicKeyOptions["excludeCredentials"]
+                                                          : QJsonArray();
     credentialCreationOptions["extensions"] = extensions;
     credentialCreationOptions["residentKey"] = isResidentKeyRequired;
     credentialCreationOptions["rp"] = QJsonObject({{"id", rpId}, {"name", rpName}});
     credentialCreationOptions["user"] = publicKeyOptions["user"];
     credentialCreationOptions["userPresence"] = !isUserVerificationRequired;
     credentialCreationOptions["userVerification"] = isUserVerificationRequired;
+    if (publicKeyOptions.contains(QStringLiteral("_osClientDataHash"))) {
+        credentialCreationOptions[QStringLiteral("_osClientDataHash")] =
+            publicKeyOptions.value(QStringLiteral("_osClientDataHash"));
+                credentialCreationOptions["authenticatorAttachment"] = BrowserPasskeys::ATTACHMENT_CROSS_PLATFORM;
+    }
 
     *result = credentialCreationOptions;
     return 0;
@@ -149,7 +157,7 @@ int BrowserPasskeysClient::getAssertionOptions(const QJsonObject& publicKeyOptio
     // Extensions
     auto extensionObject = publicKeyOptions["extensions"].toObject();
     const auto extensionData = passkeyUtils()->buildExtensionData(extensionObject);
-    const auto extensions = browserMessageBuilder()->getBase64FromArray(extensionData.extensionData);
+    const auto extensions = passkeyEncoding()->getBase64FromArray(extensionData.extensionData);
 
     // clientDataJson
     const auto clientDataJson = passkeyUtils()->buildClientDataJson(publicKeyOptions, origin, true);
@@ -157,18 +165,23 @@ int BrowserPasskeysClient::getAssertionOptions(const QJsonObject& publicKeyOptio
     // Unknown values are ignored, but a warning will be still shown just in case
     const auto userVerification = publicKeyOptions["userVerification"].toString();
     if (!passkeyUtils()->isUserVerificationValid(userVerification)) {
-        qWarning() << browserMessageBuilder()->getErrorMessage(ERROR_PASSKEYS_INVALID_USER_VERIFICATION);
+        qWarning() << passkeyEncoding()->getErrorMessage(ERROR_PASSKEYS_INVALID_USER_VERIFICATION);
     }
     const auto isUserVerificationRequired = passkeyUtils()->isUserVerificationRequired(publicKeyOptions);
 
     QJsonObject assertionOptions;
-    assertionOptions["allowCredentials"] = publicKeyOptions["allowCredentials"];
+    assertionOptions["allowCredentials"] = publicKeyOptions["allowCredentials"].isArray()
+                                               ? publicKeyOptions["allowCredentials"]
+                                               : QJsonArray();
     assertionOptions["clientDataJson"] = clientDataJson;
     assertionOptions["clientExtensionResults"] = extensionData.extensionObject;
     assertionOptions["extensions"] = extensions;
     assertionOptions["rpId"] = rpId;
     assertionOptions["userPresence"] = true;
     assertionOptions["userVerification"] = isUserVerificationRequired;
+    if (publicKeyOptions.contains(QStringLiteral("_osClientDataHash"))) {
+        assertionOptions[QStringLiteral("_osClientDataHash")] = publicKeyOptions.value(QStringLiteral("_osClientDataHash"));
+    }
 
     *result = assertionOptions;
     return 0;
