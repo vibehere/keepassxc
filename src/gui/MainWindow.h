@@ -26,6 +26,7 @@
 #include <QSystemTrayIcon>
 #include <QTimer>
 
+#include "config-keepassx.h"
 #include "core/SignalMultiplexer.h"
 #include "gui/DatabaseWidget.h"
 #include "gui/osutils/ScreenLockListener.h"
@@ -156,6 +157,10 @@ private slots:
     void enableMenuAndToolbar();
     void disableMenuAndToolbar();
     void clearSSHAgent();
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+    void toggleOsPasskeys(bool enabled);
+    void syncOsPasskeysAction();
+#endif
 
 private:
     static const QString BaseWindowTitle;
@@ -190,6 +195,9 @@ private:
     QPointer<QProgressBar> m_progressBar;
     QPointer<QLabel> m_progressBarLabel;
     QPointer<QLabel> m_statusBarLabel;
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+    QPointer<QAction> m_osPasskeysAction;
+#endif
 
     Q_DISABLE_COPY(MainWindow)
 

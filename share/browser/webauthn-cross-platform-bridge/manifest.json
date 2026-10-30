@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "WebAuthn cross-platform bridge",
+  "version": "1.0.0",
+  "description": "Relax platform-only WebAuthn filters so USB and OS Passkeys security keys can be used.",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}

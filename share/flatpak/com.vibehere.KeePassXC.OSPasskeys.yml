@@ -1,0 +1,144 @@
+# Flatpak for KeePassXC OS Passkeys fork.
+# Primary path for Bazzite / Fedora Atomic / Aurora / Bluefin / Silverblue,
+# and works on Ubuntu, Debian, Arch, openSUSE whenever Flatpak is available.
+id: com.vibehere.KeePassXC.OSPasskeys
+runtime: org.kde.Platform
+runtime-version: "6.9"
+sdk: org.kde.Sdk
+command: keepassxc-wrapper
+finish-args:
+  - --share=ipc
+  - --socket=x11
+  - --socket=wayland
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.ScreenSaver
+  - --system-talk-name=org.freedesktop.login1
+  - --talk-name=org.gnome.ScreenSaver
+  - --talk-name=org.gnome.SessionManager
+  - --talk-name=org.gnome.SessionManager.Presence
+  - --talk-name=com.canonical.Unity.Session
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --own-name=org.freedesktop.secrets
+  - --share=network
+  # YubiKey + virtual FIDO2 (/dev/uhid) for OS Passkeys
+  - --device=all
+  - --socket=pcsc
+  - --socket=ssh-auth
+  - --env=SSH_AUTH_SOCK=$SSH_AUTH_SOCK
+  - --filesystem=host
+  - --filesystem=/tmp
+  - --filesystem=xdg-run/gvfs
+cleanup:
+  - "*.a"
+  - "*.h"
+  - "*.la"
+  - /include
+  - /lib/pkgconfig
+  - /share/doc
+  - /share/man
+modules:
+  - name: minizip
+    subdir: contrib/minizip
+    sources:
+      - type: git
+        url: https://github.com/madler/zlib
+        tag: v1.3.2
+        commit: da607da739fa6047df13e66a2af6b8bec7c2a498
+      - type: shell
+        commands:
+          - |
+            if ! grep -q 'ints\.h' contrib/minizip/Makefile.am; then
+              sed -i '/crypt\.h \\/a\\	ints.h \\' contrib/minizip/Makefile.am
+            fi
+      - type: script
+        dest: contrib/minizip/
+        dest-filename: autogen.sh
+        commands:
+          - autoreconf -ifv
+
+  - name: botan
+    buildsystem: simple
+    build-commands:
+      - >
+        python3 ./configure.py
+        --disable-cc-tests
+        --disable-static-library
+        --prefix=/app
+        --with-zlib
+        --without-documentation
+      - make -j${FLATPAK_BUILDER_N_JOBS}
+      - make install
+    sources:
+      - type: archive
+        url: https://github.com/randombit/botan/archive/refs/tags/3.7.1.tar.gz
+        sha256: 8d2a072c7cdca6cadd16f89bb966fce1b3ec77cb4614bf1d87dec1337a3d2330
+    post-install:
+      - install -Dm644 -t /app/share/licenses/botan license.txt
+
+  - name: pcsclite
+    config-opts:
+      - --sbindir=/app/bin
+      - --disable-polkit
+    sources:
+      - type: git
+        url: https://github.com/LudovicRousseau/PCSC
+        tag: 2.3.1
+        commit: d1226522e4ad035f7bdd515738f854df28133c0d
+    cleanup:
+      - /bin
+    post-install:
+      - install -Dm644 -t /app/share/licenses/pcsclite COPYING
+
+  - name: keyutils
+    buildsystem: simple
+    build-commands:
+      - >
+        make PREFIX=/app SBINDIR=/app/bin BINDIR=/app/bin LIBDIR=/app/lib
+        USRLIBDIR=/app/lib SHAREDIR=/app/share/keyutils MANDIR=/app/share/man
+        INCLUDEDIR=/app/include install
+    sources:
+      - type: git
+        url: https://git.kernel.org/pub/scm/linux/kernel/git/dhowells/keyutils.git
+        tag: v1.6.3
+        commit: cb3bb194cca88211cbfcdde2f10c0f43c3fb8ec3
+
+  - name: libusb
+    config-opts:
+      - --disable-udev
+      - --disable-static
+    sources:
+      - type: archive
+        url: https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27.tar.bz2
+        sha256: ffaa41d741a8a3bee244ac8e54a72ea05bf2879663c098c82fc5757853441575
+    cleanup:
+      - /lib/*.la
+
+  - name: keepassxc
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DKEEPASSXC_DIST_TYPE=Flatpak
+      - -DKEEPASSXC_BUILD_TYPE=Release
+      - -DAPP_ID=com.vibehere.KeePassXC.OSPasskeys
+      - -DWITH_TESTS=OFF
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - -DKPXC_FEATURE_UPDATES=OFF
+      - -DKPXC_FEATURE_DOCS=OFF
+      - -DKPXC_FEATURE_BROWSER=ON
+      - -DKPXC_FEATURE_PASSKEYS=ON
+      - -DKPXC_FEATURE_OS_PASSKEYS=ON
+      - -DKPXC_FEATURE_SSHAGENT=ON
+      - -DKPXC_FEATURE_FDOSECRETS=ON
+    sources:
+      - type: dir
+        path: ../..
+    post-install:
+      - install -Dm755 ./utils/keepassxc-flatpak-wrapper.sh /app/bin/keepassxc-wrapper
+      - install -Dm644 ./share/linux/udev/99-keepassxc-uhid.rules /app/share/keepassxc/udev/99-keepassxc-uhid.rules
+      - |
+        for f in COPYING LICENSE*; do
+          [ -f "$f" ] || continue
+          install -Dm644 "$f" "/app/share/licenses/com.vibehere.KeePassXC.OSPasskeys/$f"
+        done
+    cleanup:
+      - /share/man

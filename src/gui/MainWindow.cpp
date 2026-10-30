@@ -68,6 +68,17 @@
 #include "fdosecrets/FdoSecretsPlugin.h"
 #endif
 
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+#ifdef Q_OS_WIN
+#include "ospasskeys/windows/OsPasskeyBootstrap.h"
+#include "ospasskeys/windows/OsPasskeyService.h"
+#include "ospasskeys/windows/PluginRegistrationManager.h"
+#elif defined(Q_OS_LINUX)
+#include "ospasskeys/linux/OsPasskeyBootstrap.h"
+#include "ospasskeys/linux/OsPasskeyService.h"
+#endif
+#endif
+
 #ifdef KPXC_FEATURE_BROWSER
 #include "browser/BrowserService.h"
 #endif
@@ -231,6 +242,24 @@ MainWindow::MainWindow()
     connect(fdoSS, &FdoSecretsPlugin::requestShowNotification, this, &MainWindow::displayDesktopNotification);
     fdoSS->updateServiceState();
     m_ui->settingsWidget->addSettingsPage(fdoSS);
+#endif
+
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+    OsPasskeyBootstrap::start(m_ui->tabWidget);
+
+    m_osPasskeysAction = new QAction(tr("OS Passkeys"), this);
+    m_osPasskeysAction->setObjectName(QStringLiteral("actionOsPasskeys"));
+    m_osPasskeysAction->setCheckable(true);
+    m_osPasskeysAction->setVisible(false);
+    m_ui->menuTools->insertAction(m_ui->actionSettings, m_osPasskeysAction);
+    m_ui->toolBar->insertAction(m_ui->actionSettings, m_osPasskeysAction);
+    if (auto* btn = qobject_cast<QToolButton*>(m_ui->toolBar->widgetForAction(m_osPasskeysAction))) {
+        // Match neighboring toolbar icons even if the global style shows text.
+        btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        btn->setAutoRaise(true);
+    }
+    syncOsPasskeysAction();
+    connect(m_osPasskeysAction, &QAction::toggled, this, &MainWindow::toggleOsPasskeys);
 #endif
 
     connect(YubiKey::instance(), SIGNAL(userInteractionRequest()), SLOT(showYubiKeyPopup()), Qt::QueuedConnection);
@@ -661,6 +690,9 @@ MainWindow::MainWindow()
 
 MainWindow::~MainWindow()
 {
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+    OsPasskeyBootstrap::stop();
+#endif
 #ifdef KPXC_FEATURE_SSHAGENT
     sshAgent()->removeAllIdentities();
 #endif
@@ -1004,6 +1036,15 @@ void MainWindow::updateMenuActionState()
 #ifdef KPXC_FEATURE_BROWSER
     m_ui->actionPasskeys->setEnabled(inDatabase || inReports);
     m_ui->actionImportPasskey->setEnabled(inDatabase);
+#endif
+
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+    if (m_osPasskeysAction) {
+        const bool showToggle = hasLockableDatabase;
+        m_osPasskeysAction->setVisible(showToggle);
+        m_osPasskeysAction->setEnabled(showToggle);
+        syncOsPasskeysAction();
+    }
 #endif
 
     m_searchWidgetAction->setEnabled(inDatabase);
@@ -1482,6 +1523,53 @@ void MainWindow::clearSSHAgent()
 #endif
 }
 
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+void MainWindow::syncOsPasskeysAction()
+{
+    if (!m_osPasskeysAction) {
+        return;
+    }
+    const bool on = osPasskeyService()->isEnabled();
+    m_osPasskeysAction->blockSignals(true);
+    m_osPasskeysAction->setChecked(on);
+    m_osPasskeysAction->setText(tr("OS Passkeys"));
+    m_osPasskeysAction->setIcon(icons()->onOffIcon("passkey", on));
+    m_osPasskeysAction->setToolTip(
+        on ? tr("OS Passkeys on — click to turn off")
+           : tr("OS Passkeys off — click to allow browsers to use passkeys from unlocked databases"));
+    m_osPasskeysAction->blockSignals(false);
+    if (auto* btn = qobject_cast<QToolButton*>(m_ui->toolBar->widgetForAction(m_osPasskeysAction))) {
+        btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    }
+}
+
+void MainWindow::toggleOsPasskeys(bool enabled)
+{
+    if (!m_osPasskeysAction) {
+        return;
+    }
+
+    if (enabled == osPasskeyService()->isEnabled()) {
+        syncOsPasskeysAction();
+        return;
+    }
+
+    const bool ok = osPasskeyService()->setEnabled(enabled);
+    if (enabled && !ok) {
+#ifdef Q_OS_WIN
+        const QString detail = PluginRegistrationManager::instance()->lastErrorString();
+#else
+        const QString detail = osPasskeyService()->lastError();
+#endif
+        MessageBox::critical(this, tr("OS Passkeys"), tr("Could not enable OS Passkeys:\n\n%1").arg(detail));
+        syncOsPasskeysAction();
+        return;
+    }
+
+    syncOsPasskeysAction();
+}
+#endif
+
 void MainWindow::saveWindowInformation()
 {
     if (isVisible()) {
@@ -1672,6 +1760,10 @@ void MainWindow::applySettingsChanges()
     if (isOk) {
         m_ui->toolBar->setToolButtonStyle(toolButtonStyle);
     }
+#ifdef KPXC_FEATURE_OS_PASSKEYS
+    // Keep the OS Passkeys control icon-only after the global toolbar style is applied.
+    syncOsPasskeysAction();
+#endif
 
     updateTrayIcon();
 
