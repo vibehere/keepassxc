@@ -16,7 +16,8 @@
  */
 
 #include "PasskeyUtils.h"
-#include "BrowserMessageBuilder.h"
+#include "PasskeyEncoding.h"
+#include "PasskeyErrors.h"
 #include "BrowserPasskeys.h"
 #include "core/EntryAttributes.h"
 #include "core/Tools.h"
@@ -40,7 +41,7 @@ int PasskeyUtils::checkLimits(const QJsonObject& pkOptions) const
     }
 
     const auto userIdBase64 = pkOptions["user"]["id"].toString();
-    const auto userId = browserMessageBuilder()->getArrayFromBase64(userIdBase64);
+    const auto userId = passkeyEncoding()->getArrayFromBase64(userIdBase64);
     if (userId.isEmpty() || (userId.length() < 1 || userId.length() > 64)) {
         return ERROR_PASSKEYS_INVALID_USER_ID;
     }
@@ -157,23 +158,36 @@ QJsonArray PasskeyUtils::parseCredentialTypes(const QJsonArray& credentialTypes)
             {"alg", WebAuthnAlgorithms::RS256},
         }));
     } else {
-        for (const auto current : credentialTypes) {
-            const auto currentObject = current.toObject();
-            if (currentObject["type"] != BrowserPasskeys::PUBLIC_KEY || currentObject["alg"].isUndefined()) {
-                continue;
-            }
-
-            const auto currentAlg = currentObject["alg"].toInt();
-            if (currentAlg != WebAuthnAlgorithms::ES256 && currentAlg != WebAuthnAlgorithms::RS256
-                && currentAlg != WebAuthnAlgorithms::EDDSA) {
-                continue;
-            }
-
-            credTypesAndPubKeyAlgs.push_back(QJsonObject({
-                {"type", currentObject["type"]},
-                {"alg", currentAlg},
-            }));
+        QJsonArray preferred;
+    QJsonArray rest;
+    for (const auto current : credentialTypes) {
+        const auto currentObject = current.toObject();
+        if (currentObject["type"] != BrowserPasskeys::PUBLIC_KEY || currentObject["alg"].isUndefined()) {
+            continue;
         }
+
+        const auto currentAlg = currentObject["alg"].toInt();
+        if (currentAlg != WebAuthnAlgorithms::ES256 && currentAlg != WebAuthnAlgorithms::RS256
+            && currentAlg != WebAuthnAlgorithms::EDDSA) {
+            continue;
+        }
+
+        const auto entry = QJsonObject({
+            {"type", currentObject["type"]},
+            {"alg", currentAlg},
+        });
+        if (currentAlg == WebAuthnAlgorithms::ES256) {
+            preferred.push_back(entry);
+        } else {
+            rest.push_back(entry);
+        }
+    }
+    for (const auto& e : preferred) {
+        credTypesAndPubKeyAlgs.push_back(e);
+    }
+    for (const auto& e : rest) {
+        credTypesAndPubKeyAlgs.push_back(e);
+    }
     }
 
     return credTypesAndPubKeyAlgs;
@@ -370,9 +384,12 @@ QStringList PasskeyUtils::getAllowedCredentialsFromAssertionOptions(const QJsonO
         const auto hasSupportedTransport = transports.isEmpty()
                                            || (transports.contains(BrowserPasskeys::AUTHENTICATOR_TRANSPORT_INTERNAL)
                                                || transports.contains(BrowserPasskeys::AUTHENTICATOR_TRANSPORT_NFC)
-                                               || transports.contains(BrowserPasskeys::AUTHENTICATOR_TRANSPORT_USB));
+                                               || transports.contains(BrowserPasskeys::AUTHENTICATOR_TRANSPORT_USB)
+                                               || transports.contains(QStringLiteral("hybrid"))
+                                               || transports.contains(QStringLiteral("hid")));
 
-        if (cred["type"].toString() == BrowserPasskeys::PUBLIC_KEY && hasSupportedTransport && !id.isEmpty()) {
+                const auto type = cred["type"].toString();
+        if ((type.isEmpty() || type == BrowserPasskeys::PUBLIC_KEY) && hasSupportedTransport && !id.isEmpty()) {
             allowedCredentials << id;
         }
     }

@@ -1,0 +1,2 @@
+# KeePassXC virtual FIDO2 (uhid) — allow local users to open /dev/uhid
+KERNEL=="uhid", MODE="0666"

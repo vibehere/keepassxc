@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "WebAuthn cross-platform bridge",
+  "version": "1.0.5",
+  "description": "Relax platform-only WebAuthn filters so USB and OS Passkeys security keys can be used.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "webauthn-cross-platform-bridge@os-passkeys",
+      "strict_min_version": "115.0"
+    }
+  },
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "page.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ]
+}

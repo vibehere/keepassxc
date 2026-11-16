@@ -16,7 +16,7 @@
  */
 
 #include "BrowserCbor.h"
-#include "BrowserMessageBuilder.h"
+#include "PasskeyEncoding.h"
 #include <QCborStreamReader>
 #include <QCborStreamWriter>
 #include <QJsonDocument>
@@ -78,11 +78,11 @@ QByteArray BrowserCbor::cborEncodePublicKey(int alg, const QByteArray& first, co
 
         // Key x-coordinate
         writer.append(-2);
-        writer.append(first);
+        writer.appendByteString(first.constData(), first.size());
 
         // Key y-coordinate
         writer.append(-3);
-        writer.append(second);
+        writer.appendByteString(second.constData(), second.size());
 
         writer.endMap();
     } else if (alg == WebAuthnAlgorithms::RS256) {
@@ -227,7 +227,7 @@ QVariant BrowserCbor::handleCborValue(const QCborValue& value) const
         auto ba = value.toByteArray();
 
         // Return base64 instead of raw byte array
-        auto base64Str = browserMessageBuilder()->getBase64FromArray(ba);
+        auto base64Str = passkeyEncoding()->getBase64FromArray(ba);
         return QVariant::fromValue(base64Str);
     }
 

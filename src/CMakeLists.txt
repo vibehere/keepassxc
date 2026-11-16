@@ -292,16 +292,21 @@ if(WIN32)
     endif()
 endif()
 
+add_subdirectory(passkeys)
 add_subdirectory(browser)
+add_subdirectory(ospasskeys)
 add_subdirectory(proxy)
+if(KPXC_FEATURE_PASSKEYS)
+    set(passkeys_LIB passkeys)
+endif()
 if(KPXC_FEATURE_BROWSER)
     set(browser_LIB browser)
     list(APPEND gui_SOURCES
             gui/dbsettings/DatabaseSettingsWidgetBrowser.cpp
             gui/entry/EntryURLModel.cpp
             gui/reports/ReportsPageBrowserStatistics.cpp
-            gui/reports/ReportsPagePasskeys.cpp
             gui/reports/ReportsWidgetBrowserStatistics.cpp
+            gui/reports/ReportsPagePasskeys.cpp
             gui/reports/ReportsWidgetPasskeys.cpp
             gui/passkeys/PasskeyExporter.cpp
             gui/passkeys/PasskeyExportDialog.cpp
@@ -372,6 +377,8 @@ target_link_libraries(keepassxc_gui
         Qt6::SvgWidgets
         Qt6::Widgets
         ${autotype_LIB}
+        ${passkeys_LIB}
+        ${ospasskeys_LIB}
         ${browser_LIB}
         ${fdosecrets_LIB}
         ${keeshare_LIB}

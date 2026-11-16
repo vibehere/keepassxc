@@ -19,23 +19,18 @@ if(KPXC_FEATURE_BROWSER)
     set(browser_SOURCES
             BrowserAccessControlDialog.cpp
             BrowserAction.cpp
-            BrowserCbor.cpp
             BrowserEntryConfig.cpp
             BrowserEntrySaveDialog.cpp
             BrowserHost.cpp
             BrowserMessageBuilder.cpp
-            BrowserPasskeys.cpp
-            BrowserPasskeysClient.cpp
-            BrowserPasskeysConfirmationDialog.cpp
             BrowserSettingsPage.cpp
             BrowserSettingsWidget.cpp
             BrowserService.cpp
             BrowserSettings.cpp
             BrowserShared.cpp
             CustomTableWidget.cpp
-            NativeMessageInstaller.cpp
-            PasskeyUtils.cpp)
+            NativeMessageInstaller.cpp)
 
     add_library(browser STATIC ${browser_SOURCES})
-    target_link_libraries(browser Qt6::Core Qt6::Concurrent Qt6::Widgets Qt6::Network ${BOTAN_LIBRARIES})
+    target_link_libraries(browser passkeys Qt6::Core Qt6::Concurrent Qt6::Widgets Qt6::Network ${BOTAN_LIBRARIES})
 endif()

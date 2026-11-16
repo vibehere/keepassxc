@@ -16,12 +16,13 @@
  */
 
 #include "TestPasskeys.h"
-#include "browser/BrowserCbor.h"
 #include "browser/BrowserMessageBuilder.h"
-#include "browser/BrowserPasskeysClient.h"
 #include "browser/BrowserService.h"
-#include "browser/PasskeyUtils.h"
 #include "config-keepassx.h"
+#include "passkeys/BrowserCbor.h"
+#include "passkeys/BrowserPasskeysClient.h"
+#include "passkeys/PasskeyErrors.h"
+#include "passkeys/PasskeyUtils.h"
 #include "core/Database.h"
 #include "core/Entry.h"
 #include "core/Group.h"

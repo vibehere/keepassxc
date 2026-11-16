@@ -18,6 +18,8 @@
 
 /* Advanced Features */
 #cmakedefine KPXC_FEATURE_BROWSER
+#cmakedefine KPXC_FEATURE_PASSKEYS
+#cmakedefine KPXC_FEATURE_OS_PASSKEYS
 #cmakedefine KPXC_FEATURE_SSHAGENT
 #cmakedefine KPXC_FEATURE_FDOSECRETS
 
